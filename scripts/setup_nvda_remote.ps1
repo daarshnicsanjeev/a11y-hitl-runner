@@ -93,14 +93,54 @@ if (-not (Test-Path $targetDir)) {
     throw "Target directory not found: $targetDir"
 }
 
+function Invoke-CheckedStep {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Command
+    )
+    Write-Host "Running: $Command"
+    cmd.exe /c $Command
+    if ($LASTEXITCODE -ne 0) {
+        [Console]::Error.WriteLine("Command failed with exit code ${LASTEXITCODE}: $Command")
+        throw "Command failed with exit code ${LASTEXITCODE}: $Command"
+    }
+}
+
 try {
     Push-Location $targetDir
 
+    if ((Test-Path ".env.example") -and -not (Test-Path ".env")) {
+        Write-Host "Copying .env.example to .env..."
+        Copy-Item -Path ".env.example" -Destination ".env" -Force
+    }
+
     if (-not [string]::IsNullOrWhiteSpace($SetupCmd)) {
-        Write-Host "Running setup command: $SetupCmd"
-        cmd.exe /c $SetupCmd
-        if ($LASTEXITCODE -ne 0) {
-            throw "Setup command failed with exit code $LASTEXITCODE"
+        Write-Host "Running custom setup command..."
+        Invoke-CheckedStep -Command $SetupCmd
+    } else {
+        Write-Host "No SetupCmd provided; auto-detecting ecosystem dependencies in $targetDir..."
+        $autoSetupSteps = @()
+
+        if (Test-Path "pnpm-lock.yaml") {
+            $autoSetupSteps = @("corepack enable", "pnpm install --frozen-lockfile")
+        } elseif (Test-Path "yarn.lock") {
+            $autoSetupSteps = @("corepack enable", "yarn install --frozen-lockfile")
+        } elseif (Test-Path "package-lock.json") {
+            $autoSetupSteps = @("npm ci")
+        } elseif (Test-Path "package.json") {
+            $autoSetupSteps = @("npm install")
+        } elseif (Test-Path "requirements.txt") {
+            $autoSetupSteps = @("python -m pip install --upgrade pip", "pip install -r requirements.txt")
+        } elseif (Test-Path "pyproject.toml") {
+            $autoSetupSteps = @("python -m pip install --upgrade pip", "pip install -e .")
+        } elseif ((Get-ChildItem -Filter "*.sln" -ErrorAction SilentlyContinue) -or (Get-ChildItem -Filter "*.csproj" -ErrorAction SilentlyContinue)) {
+            $autoSetupSteps = @("dotnet restore", "dotnet build")
+        } else {
+            Write-Host "No recognized dependency manifest found; skipping auto-install."
+        }
+
+        foreach ($step in $autoSetupSteps) {
+            Invoke-CheckedStep -Command $step
         }
     }
 

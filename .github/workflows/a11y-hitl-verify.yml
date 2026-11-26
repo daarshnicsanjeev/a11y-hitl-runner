@@ -64,6 +64,17 @@ jobs:
           path: target-app
           token: ''
 
+      - name: Cache target dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~\AppData\Local\npm-cache
+            ~\AppData\Local\pip\Cache
+            ~\.nuget\packages
+          key: ${{ runner.os }}-${{ inputs.target_repo }}-${{ hashFiles('target-app/**/package-lock.json', 'target-app/**/pnpm-lock.yaml', 'target-app/**/yarn.lock', 'target-app/**/requirements.txt', 'target-app/**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ inputs.target_repo }}-
+
       - name: Setup NVDA Remote and launch target
         shell: pwsh
         run: |
