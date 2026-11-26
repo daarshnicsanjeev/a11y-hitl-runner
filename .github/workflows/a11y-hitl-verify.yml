@@ -89,6 +89,7 @@ jobs:
           repository: ${{ inputs.target_repo }}
           ref: ${{ inputs.pr_or_branch }}
           path: target-app
+          fetch-depth: 1
           submodules: recursive
 
       - name: Cache NVDA SCons build artifacts
@@ -115,6 +116,16 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ inputs.target_repo }}-
 
+      - name: Cache Flutter SDK & Pub dependencies
+        if: ${{ inputs.platform == 'desktop' && hashFiles('target-app/bin/internal/engine.version') != '' }}
+        uses: actions/cache@v4
+        with:
+          path: |
+            target-app/bin/cache
+            ~\AppData\Local\Pub\Cache
+          key: ${{ runner.os }}-flutter-${{ hashFiles('target-app/bin/internal/engine.version') }}
+          restore-keys: |
+            ${{ runner.os }}-flutter-
       - name: Setup NVDA Remote and launch target
         shell: pwsh
         run: |
