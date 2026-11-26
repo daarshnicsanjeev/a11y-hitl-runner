@@ -12,6 +12,8 @@ param(
 
     [string]$CompanionSetupCmd = "",
 
+    [string]$CustomHookB64 = "",
+
     [string]$StartCmd = ""
 )
 
@@ -63,6 +65,29 @@ function Invoke-CompanionSetup {
     if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) {
         [Console]::Error.WriteLine("Companion setup command failed with exit code ${LASTEXITCODE}: $Command")
         throw "Companion setup command failed with exit code ${LASTEXITCODE}: $Command"
+    }
+}
+
+function Invoke-CustomHook {
+    param(
+        [string]$EncodedHook,
+        [Parameter(Mandatory = $true)]
+        [string]$TargetDir
+    )
+    if ([string]::IsNullOrWhiteSpace($EncodedHook)) {
+        return
+    }
+    $hookPath = Join-Path $TargetDir ".hitl-hook.ps1"
+    Write-Host "Decoding custom hook script to $hookPath..."
+    $hookBytes = [System.Convert]::FromBase64String($EncodedHook)
+    $hookText = [System.Text.Encoding]::UTF8.GetString($hookBytes)
+    Set-Content -Path $hookPath -Value $hookText -Encoding UTF8
+
+    Write-Host "Executing custom hook $hookPath..."
+    powershell.exe -ExecutionPolicy Bypass -File $hookPath
+    if ($LASTEXITCODE -ne 0) {
+        [Console]::Error.WriteLine("Custom hook failed with exit code ${LASTEXITCODE}: $hookPath")
+        throw "Custom hook failed with exit code ${LASTEXITCODE}: $hookPath"
     }
 }
 
@@ -147,6 +172,7 @@ try {
         Invoke-CheckedStep -Command $nvdaBuildCmd
 
         Invoke-CompanionSetup -Command $CompanionSetupCmd
+        Invoke-CustomHook -EncodedHook $CustomHookB64 -TargetDir $targetDir
 
         $sourceNvdaExe = Join-Path $targetDir "source\nvda.exe"
         if (-not (Test-Path $sourceNvdaExe)) {
@@ -222,6 +248,7 @@ try {
         }
 
         Invoke-CompanionSetup -Command $CompanionSetupCmd
+        Invoke-CustomHook -EncodedHook $CustomHookB64 -TargetDir $targetDir
 
         if ([string]::IsNullOrWhiteSpace($StartCmd)) {
             throw "StartCmd is required when Platform is 'desktop'."

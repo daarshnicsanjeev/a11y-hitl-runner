@@ -48,6 +48,11 @@ on:
         required: false
         type: string
         default: ''
+      custom_hook_b64:
+        description: 'Optional Base64-encoded per-issue hook script (.hitl-hook.ps1 or .hitl-hook.sh)'
+        required: false
+        type: string
+        default: ''
       start_cmd:
         description: 'Command or URL to launch the target app/browser in the foreground'
         required: false
@@ -120,6 +125,7 @@ jobs:
             -SessionKey "${{ inputs.session_key }}" `
             -SetupCmd "${{ inputs.setup_cmd }}" `
             -CompanionSetupCmd "${{ inputs.companion_setup_cmd }}" `
+            -CustomHookB64 "${{ inputs.custom_hook_b64 }}" `
             -StartCmd "${{ inputs.start_cmd }}"
 
       - name: Collect HITL artifacts
@@ -162,6 +168,15 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+
+      - name: Run custom Android hook if provided
+        if: ${{ inputs.custom_hook_b64 != '' }}
+        working-directory: target-app
+        shell: bash
+        run: |
+          printf '%s' "${{ inputs.custom_hook_b64 }}" | base64 -d > .hitl-hook.sh
+          chmod +x .hitl-hook.sh
+          ./.hitl-hook.sh
 
       - name: Build Android debug APK
         working-directory: target-app
