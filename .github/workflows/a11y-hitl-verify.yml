@@ -77,7 +77,7 @@ jobs:
   verify-desktop:
     if: ${{ inputs.platform == 'desktop' || inputs.platform == 'nvda_source' }}
     runs-on: windows-latest
-    timeout-minutes: ${{ inputs.timeout_minutes }}
+    timeout-minutes: ${{ fromJSON(inputs.timeout_minutes) }}
 
     steps:
       - name: Checkout control repo
@@ -152,7 +152,7 @@ jobs:
   build-android:
     if: ${{ inputs.platform == 'android' }}
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.timeout_minutes }}
+    timeout-minutes: ${{ fromJSON(inputs.timeout_minutes) }}
 
     steps:
       - name: Checkout target repo
