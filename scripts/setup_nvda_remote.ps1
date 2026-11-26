@@ -10,6 +10,8 @@ param(
 
     [string]$SetupCmd = "",
 
+    [string]$CompanionSetupCmd = "",
+
     [string]$StartCmd = ""
 )
 
@@ -48,6 +50,58 @@ function Invoke-CheckedStep {
     }
 }
 
+function Invoke-CompanionSetup {
+    param(
+        [string]$Command
+    )
+    if ([string]::IsNullOrWhiteSpace($Command)) {
+        return
+    }
+    Write-Host "Running companion setup command in PowerShell..."
+    $global:LASTEXITCODE = 0
+    Invoke-Expression $Command
+    if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) {
+        [Console]::Error.WriteLine("Companion setup command failed with exit code ${LASTEXITCODE}: $Command")
+        throw "Companion setup command failed with exit code ${LASTEXITCODE}: $Command"
+    }
+}
+
+function Start-TargetForeground {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Command
+    )
+    if ($Command -match '^https?://') {
+        Write-Host "Launching URL maximized in Microsoft Edge: $Command"
+        return (Start-Process -FilePath "msedge.exe" -ArgumentList "--start-maximized", $Command -PassThru)
+    }
+
+    Write-Host "Starting target command maximized: $Command"
+    $portsBefore = (Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort -Unique)
+    $proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $Command -WindowStyle Maximized -PassThru
+
+    $detectedPort = $null
+    for ($i = 0; $i -lt 15; $i++) {
+        Start-Sleep -Seconds 2
+        $portsNow = (Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort -Unique)
+        $newPorts = $portsNow | Where-Object { $_ -notin $portsBefore -and $_ -ge 1024 }
+        if ($newPorts) {
+            $detectedPort = ($newPorts | Select-Object -First 1)
+            break
+        }
+        if ($proc.HasExited) {
+            break
+        }
+    }
+
+    if ($detectedPort) {
+        $localUrl = "http://localhost:$detectedPort"
+        Write-Host "Detected local port $detectedPort; opening $localUrl maximized in Microsoft Edge..."
+        Start-Process -FilePath "msedge.exe" -ArgumentList "--start-maximized", $localUrl
+    }
+    return $proc
+}
+
 Write-Host "Ensuring Windows Audio service (Audiosrv) is running..."
 try {
     Set-Service -Name "Audiosrv" -StartupType Automatic -ErrorAction SilentlyContinue
@@ -77,6 +131,7 @@ $nvdaIniContent = @"
 Write-Host "Writing NVDA Remote configuration to $nvdaIniPath..."
 Set-Content -Path $nvdaIniPath -Value $nvdaIniContent -Encoding UTF8
 
+$nvdaProc = $null
 $appProc = $null
 $targetDir = Join-Path (Get-Location) "target-app"
 if (-not (Test-Path $targetDir)) {
@@ -91,13 +146,20 @@ try {
         Write-Host "Building NVDA from source in $targetDir..."
         Invoke-CheckedStep -Command $nvdaBuildCmd
 
+        Invoke-CompanionSetup -Command $CompanionSetupCmd
+
         $sourceNvdaExe = Join-Path $targetDir "source\nvda.exe"
         if (-not (Test-Path $sourceNvdaExe)) {
             throw "Expected NVDA source executable not found at $sourceNvdaExe"
         }
         Write-Host "Starting NVDA from source ($sourceNvdaExe)..."
-        $appProc = Start-Process -FilePath $sourceNvdaExe -WorkingDirectory (Split-Path $sourceNvdaExe) -PassThru
+        $nvdaProc = Start-Process -FilePath $sourceNvdaExe -WorkingDirectory (Split-Path $sourceNvdaExe) -PassThru
         Start-Sleep -Seconds 5
+
+        $normalizedStart = $StartCmd.Trim()
+        if (-not [string]::IsNullOrWhiteSpace($normalizedStart) -and $normalizedStart -notin @("source\nvda.exe", "source/nvda.exe")) {
+            $appProc = Start-TargetForeground -Command $normalizedStart
+        }
     } else {
         $nvdaUrl = "https://download.nvaccess.org/releases/stable/nvda_2026.3.1.exe"
         $installerPath = Join-Path $env:TEMP "nvda_2026.3.1.exe"
@@ -121,7 +183,7 @@ try {
         }
 
         Write-Host "Starting NVDA ($nvdaExe)..."
-        Start-Process -FilePath $nvdaExe
+        $nvdaProc = Start-Process -FilePath $nvdaExe -PassThru
         Start-Sleep -Seconds 5
 
         if ((Test-Path ".env.example") -and -not (Test-Path ".env")) {
@@ -159,38 +221,13 @@ try {
             }
         }
 
+        Invoke-CompanionSetup -Command $CompanionSetupCmd
+
         if ([string]::IsNullOrWhiteSpace($StartCmd)) {
             throw "StartCmd is required when Platform is 'desktop'."
         }
 
-        if ($StartCmd -match '^https?://') {
-            Write-Host "Launching URL maximized in Microsoft Edge: $StartCmd"
-            Start-Process -FilePath "msedge.exe" -ArgumentList "--start-maximized", $StartCmd
-        } else {
-            Write-Host "Starting target command: $StartCmd"
-            $portsBefore = (Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort -Unique)
-            $appProc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $StartCmd -PassThru
-
-            $detectedPort = $null
-            for ($i = 0; $i -lt 15; $i++) {
-                Start-Sleep -Seconds 2
-                $portsNow = (Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort -Unique)
-                $newPorts = $portsNow | Where-Object { $_ -notin $portsBefore -and $_ -ge 1024 }
-                if ($newPorts) {
-                    $detectedPort = ($newPorts | Select-Object -First 1)
-                    break
-                }
-                if ($appProc.HasExited) {
-                    break
-                }
-            }
-
-            if ($detectedPort) {
-                $localUrl = "http://localhost:$detectedPort"
-                Write-Host "Detected local port $detectedPort; opening $localUrl maximized in Microsoft Edge..."
-                Start-Process -FilePath "msedge.exe" -ArgumentList "--start-maximized", $localUrl
-            }
-        }
+        $appProc = Start-TargetForeground -Command $StartCmd
     }
 
     Pop-Location
@@ -203,7 +240,9 @@ try {
 }
 finally {
     Save-DesktopScreenshot
-    if ($appProc -and -not $appProc.HasExited) {
-        Stop-Process -Id $appProc.Id -Force -ErrorAction SilentlyContinue
+    foreach ($p in @($appProc, $nvdaProc)) {
+        if ($p -and -not $p.HasExited) {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+        }
     }
 }

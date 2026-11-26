@@ -43,6 +43,11 @@ on:
         required: false
         type: string
         default: ''
+      companion_setup_cmd:
+        description: 'Optional PowerShell command to install/extract companion software'
+        required: false
+        type: string
+        default: ''
       start_cmd:
         description: 'Command or URL to launch the target app/browser in the foreground'
         required: false
@@ -114,6 +119,7 @@ jobs:
             -RelayHost "${{ inputs.relay_host }}" `
             -SessionKey "${{ inputs.session_key }}" `
             -SetupCmd "${{ inputs.setup_cmd }}" `
+            -CompanionSetupCmd "${{ inputs.companion_setup_cmd }}" `
             -StartCmd "${{ inputs.start_cmd }}"
 
       - name: Collect HITL artifacts
