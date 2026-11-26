@@ -1,0 +1,95 @@
+name: A11y HITL Verify
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: 'owner/repo of the target open-source project'
+        required: true
+        type: string
+      pr_or_branch:
+        description: 'Branch name or PR ref (pull/<num>/head) to test'
+        required: true
+        type: string
+      phase:
+        description: 'Verification phase'
+        required: true
+        type: choice
+        options:
+          - reproduce
+          - verify_fix
+        default: reproduce
+      relay_host:
+        description: 'NVDA Remote relay host'
+        required: false
+        type: string
+        default: nvdaremote.com
+      session_key:
+        description: 'Random connection key passed by the local dispatcher'
+        required: true
+        type: string
+      setup_cmd:
+        description: 'Dependency install/build command (run inside target-app/)'
+        required: false
+        type: string
+        default: ''
+      start_cmd:
+        description: 'Command or URL to launch the target app/browser in the foreground'
+        required: true
+        type: string
+      timeout_minutes:
+        description: 'Job timeout in minutes'
+        required: false
+        type: number
+        default: 20
+
+concurrency:
+  group: a11y-hitl-singleton
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+
+    steps:
+      - name: Checkout control repo
+        uses: actions/checkout@v4
+
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.target_repo }}
+          ref: ${{ inputs.pr_or_branch }}
+          path: target-app
+          token: ''
+
+      - name: Setup NVDA Remote and launch target
+        shell: pwsh
+        run: |
+          .\scripts\setup_nvda_remote.ps1 `
+            -RelayHost "${{ inputs.relay_host }}" `
+            -SessionKey "${{ inputs.session_key }}" `
+            -SetupCmd "${{ inputs.setup_cmd }}" `
+            -StartCmd "${{ inputs.start_cmd }}"
+
+      - name: Collect HITL artifacts
+        if: always()
+        shell: pwsh
+        run: |
+          $artifactDir = Join-Path "${{ runner.temp }}" "hitl-artifacts"
+          New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
+          foreach ($file in @("nvda.log", "hitl-final.png")) {
+            $src = Join-Path $env:TEMP $file
+            if (Test-Path $src) {
+              Copy-Item -Path $src -Destination (Join-Path $artifactDir $file) -Force
+            }
+          }
+
+      - name: Upload HITL logs and screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: a11y-hitl-logs-${{ inputs.phase }}
+          path: ${{ runner.temp }}\hitl-artifacts\*
+          if-no-files-found: warn
