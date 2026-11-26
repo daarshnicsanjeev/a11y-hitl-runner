@@ -19,6 +19,14 @@ on:
           - reproduce
           - verify_fix
         default: reproduce
+      platform:
+        description: 'Target verification platform'
+        required: false
+        type: choice
+        options:
+          - desktop
+          - android
+        default: desktop
       relay_host:
         description: 'NVDA Remote relay host'
         required: false
@@ -26,8 +34,9 @@ on:
         default: nvdaremote.com
       session_key:
         description: 'Random connection key passed by the local dispatcher'
-        required: true
+        required: false
         type: string
+        default: ''
       setup_cmd:
         description: 'Dependency install/build command (run inside target-app/)'
         required: false
@@ -35,8 +44,14 @@ on:
         default: ''
       start_cmd:
         description: 'Command or URL to launch the target app/browser in the foreground'
-        required: true
+        required: false
         type: string
+        default: ''
+      apk_glob:
+        description: 'Glob pattern for Android debug APK'
+        required: false
+        type: string
+        default: target-app/**/build/outputs/apk/debug/*.apk
       timeout_minutes:
         description: 'Job timeout in minutes'
         required: false
@@ -48,7 +63,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verify:
+  verify-desktop:
+    if: ${{ inputs.platform == 'desktop' }}
     runs-on: windows-latest
     timeout-minutes: ${{ inputs.timeout_minutes }}
 
@@ -104,3 +120,40 @@ jobs:
           name: a11y-hitl-logs-${{ inputs.phase }}
           path: ${{ runner.temp }}\hitl-artifacts\*
           if-no-files-found: warn
+
+  build-android:
+    if: ${{ inputs.platform == 'android' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+
+    steps:
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.target_repo }}
+          ref: ${{ inputs.pr_or_branch }}
+          path: target-app
+          token: ''
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Build Android debug APK
+        working-directory: target-app
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.setup_cmd }}" ]; then
+            eval "${{ inputs.setup_cmd }}"
+          else
+            chmod +x gradlew && ./gradlew assembleDebug
+          fi
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: a11y-hitl-apk-${{ inputs.phase }}
+          path: ${{ inputs.apk_glob }}
+          if-no-files-found: error
