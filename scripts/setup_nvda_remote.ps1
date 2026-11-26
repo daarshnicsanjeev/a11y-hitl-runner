@@ -1,5 +1,8 @@
 [CmdletBinding()]
 param(
+    [ValidateSet("desktop", "nvda_source")]
+    [string]$Platform = "desktop",
+
     [string]$RelayHost = "nvdaremote.com",
 
     [Parameter(Mandatory = $true)]
@@ -7,8 +10,7 @@ param(
 
     [string]$SetupCmd = "",
 
-    [Parameter(Mandatory = $true)]
-    [string]$StartCmd
+    [string]$StartCmd = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,16 +35,17 @@ function Save-DesktopScreenshot {
     }
 }
 
-$nvdaUrl = "https://download.nvaccess.org/releases/stable/nvda_2026.3.1.exe"
-$installerPath = Join-Path $env:TEMP "nvda_2026.3.1.exe"
-
-Write-Host "Downloading NVDA from $nvdaUrl..."
-Invoke-WebRequest -Uri $nvdaUrl -OutFile $installerPath -UseBasicParsing
-
-Write-Host "Installing NVDA silently..."
-$installProc = Start-Process -FilePath $installerPath -ArgumentList "--install-silent" -Wait -PassThru -NoNewWindow
-if ($installProc.ExitCode -ne 0) {
-    throw "NVDA silent installation failed with exit code $($installProc.ExitCode)"
+function Invoke-CheckedStep {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Command
+    )
+    Write-Host "Running: $Command"
+    cmd.exe /c $Command
+    if ($LASTEXITCODE -ne 0) {
+        [Console]::Error.WriteLine("Command failed with exit code ${LASTEXITCODE}: $Command")
+        throw "Command failed with exit code ${LASTEXITCODE}: $Command"
+    }
 }
 
 Write-Host "Ensuring Windows Audio service (Audiosrv) is running..."
@@ -74,103 +77,119 @@ $nvdaIniContent = @"
 Write-Host "Writing NVDA Remote configuration to $nvdaIniPath..."
 Set-Content -Path $nvdaIniPath -Value $nvdaIniContent -Encoding UTF8
 
-$nvdaExeCandidates = @(
-    (Join-Path ${env:ProgramFiles(x86)} "NVDA\nvda.exe"),
-    (Join-Path $env:ProgramFiles "NVDA\nvda.exe")
-)
-$nvdaExe = $nvdaExeCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
-if (-not $nvdaExe) {
-    $nvdaExe = "nvda.exe"
-}
-
-Write-Host "Starting NVDA ($nvdaExe)..."
-Start-Process -FilePath $nvdaExe
-Start-Sleep -Seconds 5
-
 $appProc = $null
 $targetDir = Join-Path (Get-Location) "target-app"
 if (-not (Test-Path $targetDir)) {
     throw "Target directory not found: $targetDir"
 }
 
-function Invoke-CheckedStep {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Command
-    )
-    Write-Host "Running: $Command"
-    cmd.exe /c $Command
-    if ($LASTEXITCODE -ne 0) {
-        [Console]::Error.WriteLine("Command failed with exit code ${LASTEXITCODE}: $Command")
-        throw "Command failed with exit code ${LASTEXITCODE}: $Command"
-    }
-}
-
 try {
     Push-Location $targetDir
 
-    if ((Test-Path ".env.example") -and -not (Test-Path ".env")) {
-        Write-Host "Copying .env.example to .env..."
-        Copy-Item -Path ".env.example" -Destination ".env" -Force
-    }
+    if ($Platform -eq "nvda_source") {
+        $nvdaBuildCmd = if (-not [string]::IsNullOrWhiteSpace($SetupCmd)) { $SetupCmd } else { "py -m scons source" }
+        Write-Host "Building NVDA from source in $targetDir..."
+        Invoke-CheckedStep -Command $nvdaBuildCmd
 
-    if (-not [string]::IsNullOrWhiteSpace($SetupCmd)) {
-        Write-Host "Running custom setup command..."
-        Invoke-CheckedStep -Command $SetupCmd
+        $sourceNvdaExe = Join-Path $targetDir "source\nvda.exe"
+        if (-not (Test-Path $sourceNvdaExe)) {
+            throw "Expected NVDA source executable not found at $sourceNvdaExe"
+        }
+        Write-Host "Starting NVDA from source ($sourceNvdaExe)..."
+        $appProc = Start-Process -FilePath $sourceNvdaExe -WorkingDirectory (Split-Path $sourceNvdaExe) -PassThru
+        Start-Sleep -Seconds 5
     } else {
-        Write-Host "No SetupCmd provided; auto-detecting ecosystem dependencies in $targetDir..."
-        $autoSetupSteps = @()
+        $nvdaUrl = "https://download.nvaccess.org/releases/stable/nvda_2026.3.1.exe"
+        $installerPath = Join-Path $env:TEMP "nvda_2026.3.1.exe"
 
-        if (Test-Path "pnpm-lock.yaml") {
-            $autoSetupSteps = @("corepack enable", "pnpm install --frozen-lockfile")
-        } elseif (Test-Path "yarn.lock") {
-            $autoSetupSteps = @("corepack enable", "yarn install --frozen-lockfile")
-        } elseif (Test-Path "package-lock.json") {
-            $autoSetupSteps = @("npm ci")
-        } elseif (Test-Path "package.json") {
-            $autoSetupSteps = @("npm install")
-        } elseif (Test-Path "requirements.txt") {
-            $autoSetupSteps = @("python -m pip install --upgrade pip", "pip install -r requirements.txt")
-        } elseif (Test-Path "pyproject.toml") {
-            $autoSetupSteps = @("python -m pip install --upgrade pip", "pip install -e .")
-        } elseif ((Get-ChildItem -Filter "*.sln" -ErrorAction SilentlyContinue) -or (Get-ChildItem -Filter "*.csproj" -ErrorAction SilentlyContinue)) {
-            $autoSetupSteps = @("dotnet restore", "dotnet build")
+        Write-Host "Downloading NVDA from $nvdaUrl..."
+        Invoke-WebRequest -Uri $nvdaUrl -OutFile $installerPath -UseBasicParsing
+
+        Write-Host "Installing NVDA silently..."
+        $installProc = Start-Process -FilePath $installerPath -ArgumentList "--install-silent" -Wait -PassThru -NoNewWindow
+        if ($installProc.ExitCode -ne 0) {
+            throw "NVDA silent installation failed with exit code $($installProc.ExitCode)"
+        }
+
+        $nvdaExeCandidates = @(
+            (Join-Path ${env:ProgramFiles(x86)} "NVDA\nvda.exe"),
+            (Join-Path $env:ProgramFiles "NVDA\nvda.exe")
+        )
+        $nvdaExe = $nvdaExeCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+        if (-not $nvdaExe) {
+            $nvdaExe = "nvda.exe"
+        }
+
+        Write-Host "Starting NVDA ($nvdaExe)..."
+        Start-Process -FilePath $nvdaExe
+        Start-Sleep -Seconds 5
+
+        if ((Test-Path ".env.example") -and -not (Test-Path ".env")) {
+            Write-Host "Copying .env.example to .env..."
+            Copy-Item -Path ".env.example" -Destination ".env" -Force
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($SetupCmd)) {
+            Write-Host "Running custom setup command..."
+            Invoke-CheckedStep -Command $SetupCmd
         } else {
-            Write-Host "No recognized dependency manifest found; skipping auto-install."
-        }
+            Write-Host "No SetupCmd provided; auto-detecting ecosystem dependencies in $targetDir..."
+            $autoSetupSteps = @()
 
-        foreach ($step in $autoSetupSteps) {
-            Invoke-CheckedStep -Command $step
-        }
-    }
-
-    if ($StartCmd -match '^https?://') {
-        Write-Host "Launching URL maximized in Microsoft Edge: $StartCmd"
-        Start-Process -FilePath "msedge.exe" -ArgumentList "--start-maximized", $StartCmd
-    } else {
-        Write-Host "Starting target command: $StartCmd"
-        $portsBefore = (Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort -Unique)
-        $appProc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $StartCmd -PassThru
-
-        # Wait briefly for a local server port to open, then launch Edge maximized if one is detected
-        $detectedPort = $null
-        for ($i = 0; $i -lt 15; $i++) {
-            Start-Sleep -Seconds 2
-            $portsNow = (Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort -Unique)
-            $newPorts = $portsNow | Where-Object { $_ -notin $portsBefore -and $_ -ge 1024 }
-            if ($newPorts) {
-                $detectedPort = ($newPorts | Select-Object -First 1)
-                break
+            if (Test-Path "pnpm-lock.yaml") {
+                $autoSetupSteps = @("corepack enable", "pnpm install --frozen-lockfile")
+            } elseif (Test-Path "yarn.lock") {
+                $autoSetupSteps = @("corepack enable", "yarn install --frozen-lockfile")
+            } elseif (Test-Path "package-lock.json") {
+                $autoSetupSteps = @("npm ci")
+            } elseif (Test-Path "package.json") {
+                $autoSetupSteps = @("npm install")
+            } elseif (Test-Path "requirements.txt") {
+                $autoSetupSteps = @("python -m pip install --upgrade pip", "pip install -r requirements.txt")
+            } elseif (Test-Path "pyproject.toml") {
+                $autoSetupSteps = @("python -m pip install --upgrade pip", "pip install -e .")
+            } elseif ((Get-ChildItem -Filter "*.sln" -ErrorAction SilentlyContinue) -or (Get-ChildItem -Filter "*.csproj" -ErrorAction SilentlyContinue)) {
+                $autoSetupSteps = @("dotnet restore", "dotnet build")
+            } else {
+                Write-Host "No recognized dependency manifest found; skipping auto-install."
             }
-            if ($appProc.HasExited) {
-                break
+
+            foreach ($step in $autoSetupSteps) {
+                Invoke-CheckedStep -Command $step
             }
         }
 
-        if ($detectedPort) {
-            $localUrl = "http://localhost:$detectedPort"
-            Write-Host "Detected local port $detectedPort; opening $localUrl maximized in Microsoft Edge..."
-            Start-Process -FilePath "msedge.exe" -ArgumentList "--start-maximized", $localUrl
+        if ([string]::IsNullOrWhiteSpace($StartCmd)) {
+            throw "StartCmd is required when Platform is 'desktop'."
+        }
+
+        if ($StartCmd -match '^https?://') {
+            Write-Host "Launching URL maximized in Microsoft Edge: $StartCmd"
+            Start-Process -FilePath "msedge.exe" -ArgumentList "--start-maximized", $StartCmd
+        } else {
+            Write-Host "Starting target command: $StartCmd"
+            $portsBefore = (Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort -Unique)
+            $appProc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $StartCmd -PassThru
+
+            $detectedPort = $null
+            for ($i = 0; $i -lt 15; $i++) {
+                Start-Sleep -Seconds 2
+                $portsNow = (Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort -Unique)
+                $newPorts = $portsNow | Where-Object { $_ -notin $portsBefore -and $_ -ge 1024 }
+                if ($newPorts) {
+                    $detectedPort = ($newPorts | Select-Object -First 1)
+                    break
+                }
+                if ($appProc.HasExited) {
+                    break
+                }
+            }
+
+            if ($detectedPort) {
+                $localUrl = "http://localhost:$detectedPort"
+                Write-Host "Detected local port $detectedPort; opening $localUrl maximized in Microsoft Edge..."
+                Start-Process -FilePath "msedge.exe" -ArgumentList "--start-maximized", $localUrl
+            }
         }
     }
 

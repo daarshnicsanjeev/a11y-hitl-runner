@@ -26,6 +26,7 @@ on:
         options:
           - desktop
           - android
+          - nvda_source
         default: desktop
       relay_host:
         description: 'NVDA Remote relay host'
@@ -64,7 +65,7 @@ concurrency:
 
 jobs:
   verify-desktop:
-    if: ${{ inputs.platform == 'desktop' }}
+    if: ${{ inputs.platform == 'desktop' || inputs.platform == 'nvda_source' }}
     runs-on: windows-latest
     timeout-minutes: ${{ inputs.timeout_minutes }}
 
@@ -78,9 +79,23 @@ jobs:
           repository: ${{ inputs.target_repo }}
           ref: ${{ inputs.pr_or_branch }}
           path: target-app
+          submodules: recursive
           token: ''
 
+      - name: Cache NVDA SCons build artifacts
+        if: ${{ inputs.platform == 'nvda_source' }}
+        uses: actions/cache@v4
+        with:
+          path: |
+            target-app/build
+            target-app/.sconsign.dblite
+            target-app/source/include
+          key: ${{ runner.os }}-nvda-scons-${{ hashFiles('target-app/sconstruct', 'target-app/nvdaHelper/**/*.cpp', 'target-app/nvdaHelper/**/*.h') }}
+          restore-keys: |
+            ${{ runner.os }}-nvda-scons-
+
       - name: Cache target dependencies
+        if: ${{ inputs.platform == 'desktop' }}
         uses: actions/cache@v4
         with:
           path: |
@@ -95,6 +110,7 @@ jobs:
         shell: pwsh
         run: |
           .\scripts\setup_nvda_remote.ps1 `
+            -Platform "${{ inputs.platform }}" `
             -RelayHost "${{ inputs.relay_host }}" `
             -SessionKey "${{ inputs.session_key }}" `
             -SetupCmd "${{ inputs.setup_cmd }}" `
